@@ -1,3 +1,5 @@
+const parseString = require('xml2js').parseString;
+
 (function() {
   var d3_layout_phylotree_event_id = "d3.layout.phylotree.event",
     d3_layout_phylotree_context_menu_id = "d3_layout_phylotree_context_menu";
@@ -123,7 +125,9 @@
         transitions: null,
         brush: true,
         reroot: true,
-        hide: true
+        hide: true,
+        "label-nodes-with-name": false,
+        zoom: false
       },
       css_classes = {
         "tree-container": "phylotree-container",
@@ -164,6 +168,11 @@
           return y_coord(d);
         })
         .interpolate("step-before"),
+      
+      ensure_size_is_in_px = function (value) {
+        return (typeof value === 'number') ? value + "px" : value;
+      },
+      
       draw_arc = function(points) {
         var start = radial_mapper(points[0].radius, points[0].angle),
           end = radial_mapper(points[0].radius, points[1].angle);
@@ -603,6 +612,10 @@
           d.x *= scales[0];
           d.y *= scales[1];
 
+          if(options["layout"] == "right-to-left"){
+            d.y = _extents[1][1]*scales[1]-d.y;
+          }
+
           if (d3_phylotree_is_leafnode(d)) {
             right_most_leaf = Math.max(
               right_most_leaf,
@@ -625,6 +638,7 @@
             });
           }
         });
+
       }
 
       if (draw_scale_bar) {
@@ -695,18 +709,28 @@
  * An instance of a phylotree. Sets event listeners, parses tags, and creates links
  * that represent branches.
  *
- * @param {Object} nwk - A Newick string or hierarchical JSON representation of a phylogenetic tree.
+ * @param {Object} nwk - A Newick string, PhyloXML string, or hierarchical JSON representation of a phylogenetic tree.
  * @param {Object} bootstrap_values - SDS: Not sure what this does.
  * @returns {Phylotree} phylotree - itself, following the builder pattern.
  */
     function phylotree(nwk, bootstrap_values) {
       d3_phylotree_add_event_listener();
 
-      var _node_data =
-        typeof nwk == "string"
-          ? d3_phylotree_newick_parser(nwk, bootstrap_values)
-          : nwk;
+      var _node_data;
       // this builds children and links;
+      if (nwk.name == 'root') {
+        // already parsed by phylotree.js
+        _node_data = { json: nwk, error: null };
+      } else if (typeof nwk != "string") {
+        // old default
+        _node_data = nwk;
+      } else if (nwk[0] == '<'){
+        // xml
+        _node_data = d3_phylotree_phyloxml_parser(nwk);
+      } else {
+        // newick string
+        _node_data = d3_phylotree_newick_parser(nwk, bootstrap_values);
+      }
 
       if (!_node_data["json"]) {
         nodes = [];
@@ -1061,6 +1085,7 @@
  * @returns {String} newick - Phylogenetic tree serialized as a Newick string.
  */
     phylotree.get_newick = function(annotator) {
+      if(!annotator) annotator = d => d.name;
       function escape_string(nn) {
         var need_escape = /[\s\[\]\,\)\(\:\'\"]/;
         var enquote = need_escape.test(nn);
@@ -1359,7 +1384,10 @@
           0
         ];
       }
-
+      if(options["right-to-left"]){
+        //return [d.screen_x, 0]; 
+        return [right_most_leaf - d.screen_x, 0];
+      }
       return [right_most_leaf - d.screen_x, 0];
     };
 
@@ -1520,6 +1548,7 @@
       sort_children(nodes[0]);
       phylotree.update_layout(nodes);
       phylotree.update();
+      return phylotree;
     };
 
     phylotree.graft_a_node = function(
@@ -1637,6 +1666,7 @@
       }
 
       traversal_type(nodes[0]);
+      return phylotree;
     };
 
 /**
@@ -1919,8 +1949,10 @@
       if (!arguments.length) return svg_element;
       if (svg !== svg_element) {
         svg = svg_element;
-        svg.selectAll("*").remove();
-        svg_defs = svg.append("defs");
+        if(css_classes["tree-container"] == "phylotree-container"){
+          svg.selectAll("*").remove();
+          svg_defs = svg.append("defs");
+        }
         d3.select(self.container).on(
           "click",
           function(d) {
@@ -2039,7 +2071,7 @@
         scale_bar.enter().append("g");
         scale_bar
           .attr("class", css_classes["tree-scale-bar"])
-          .style("font-size", "" + scale_bar_font_size)
+          .style("font-size", ensure_size_is_in_px(scale_bar_font_size))
           .attr("transform", function(d) {
             return d3_phylotree_svg_translate([
               offsets[1] + options["left-offset"],
@@ -2211,14 +2243,19 @@
 
       drawn_nodes
         .attr("transform", function(d) {
+          const should_shift = options["layout"] == "right-to-left" && d3_phylotree_is_leafnode(d);
           d.screen_x = x_coord(d);
           d.screen_y = y_coord(d);
-          return d3_phylotree_svg_translate([d.screen_x, d.screen_y]);
+          return d3_phylotree_svg_translate([should_shift ? 0 : d.screen_x, d.screen_y]);
         })
         .attr("class", phylotree.reclass_node)
         .each(function(d) {
           phylotree.draw_node(this, d, transitions);
         });
+
+      if(options["label-nodes-with-name"]){
+        drawn_nodes.attr("id", function(d) { return "node-" + d.name });
+      }
 
       var sizes = d3_phylotree_resize_svg(phylotree, svg, transitions);
 
@@ -2283,11 +2320,46 @@
         brush.call(brush_object);
       }
       phylotree.sync_edge_labels();
+      if(options["zoom"]) {
+        var zoom = d3.behavior.zoom()
+          .scaleExtent([.1, 10])
+          .on("zoom", function(){
+            var translate = d3.event.translate;
+            translate[0] += offsets[1] + options["left-offset"];
+            translate[1] += phylotree.pad_height();
+            d3.select("."+css_classes["tree-container"])
+              .attr("transform", "translate(" + translate + ")scale(" + d3.event.scale + ")");
+          });
+          svg.call(zoom);
+      }
       return phylotree;
     };
 
-    phylotree.css_classes = function() {
-      return css_classes;
+/**
+ * Get or set CSS classes.
+ *
+ * @param {Object} opt Keys are the CSS class to toggle and values are
+ * the parameters for that CSS class.
+ * @param {Boolean} run_update (optional) Whether or not the tree should update. 
+ * @returns The current ``phylotree``.
+ */
+    phylotree.css_classes = function(opt, run_update) {
+      if (!arguments.length) return css_classes;
+
+      var do_update = false;
+
+      for (var key in css_classes) {
+        if (key in opt && opt[key] != css_classes[key]) {
+          do_update = true;
+          css_classes[key] = opt[key];
+        }
+      }
+
+      if (run_update && do_update) {
+        phylotree.layout();
+      }
+
+      return phylotree;
     };
 
 /**
@@ -2307,7 +2379,7 @@
               ",." +
               css_classes["tree-selection-brush"]
           )
-          .remove();
+          //.remove();
         return phylotree.update(transitions);
       }
       return phylotree;
@@ -2458,7 +2530,6 @@
         });
       }
     };
-
     phylotree.draw_node = function(container, node, transitions) {
       container = d3.select(container);
 
@@ -2488,7 +2559,7 @@
             return node_label(d);
           })
           .style("font-size", function(d) {
-            return shown_font_size;
+            return ensure_size_is_in_px(shown_font_size);
           });
 
         if (phylotree.radial()) {
@@ -2508,6 +2579,9 @@
           (transitions ? labels.transition() : labels)
             .attr("text-anchor", "start")
             .attr("transform", function(d) {
+              if(options["layout"] == "right-to-left"){
+                return d3_phylotree_svg_translate([-20, 0]);
+              }
               return d3_phylotree_svg_translate(
                 phylotree.align_tips() ? phylotree.shift_tip(d) : null
               );
@@ -2536,6 +2610,9 @@
             tracers
               .transition()
               .attr("x2", function(d) {
+                if(options["layout"] == "right-to-left"){
+                  return d.screen_x;
+                }
                 return phylotree.shift_tip(d)[0];
               })
               .attr("transform", function(d) {
@@ -2887,9 +2964,6 @@
           case 3: { // branch length
             // reading name
             if (current_char == ":") {
-              if (automaton_state == 3) {
-                return generate_error(char_index);
-              }
               automaton_state = 3;
             } else if (current_char == "," || current_char == ")") {
               try {
@@ -2933,6 +3007,10 @@
                   if (space.test(current_char)) {
                     continue;
                   }
+                  if (current_char == ";") { // semicolon terminates tree definition 
+                    char_index = nwk_str.length;
+                    break;
+                  } 
                   current_node_name += current_char;
                 }
               }
@@ -2940,7 +3018,7 @@
 
             break;
           }
-          case 2: {
+          case 2: { // inside a quoted expression
             if (current_char == quote_delimiter) {
               if (char_index < nwk_str.length - 1) {
                 if (nwk_str[char_index + 1] == quote_delimiter) {
@@ -2957,7 +3035,7 @@
             }
             break;
           }
-          case 4: {
+          case 4: { // inside a comment / attribute
             if (current_char == "]") {
               automaton_state = 3;
             } else {
@@ -2978,10 +3056,45 @@
       return generate_error(nwk_str.length - 1);
     }
 
+    if (current_node_name.length) {
+        tree_json.name = current_node_name;
+    }
+
     return {
       json: tree_json,
       error: null
     };
+  }
+
+  function d3_phylotree_phyloxml_parser(xml_string) {
+    function parse_phyloxml(node, index) {
+      if(node.clade) {
+        node.clade.forEach(parse_phyloxml)
+        node.children = node.clade;
+        delete node.clade;
+      }
+      node.original_child_order = index + 1;
+
+      if(node.branch_length) {
+        node.attribute = node.branch_length[0];
+      }
+      if(node.taxonomy) {
+        node.name = node.taxonomy[0].scientific_name[0];
+      }
+      node.annotation = "";
+    }
+
+    var tree_json; 
+    parseString(xml_string, function(error, xml) {
+      tree_json = xml.phyloxml.phylogeny[0].clade[0];
+      tree_json.name = "root";
+      parse_phyloxml(tree_json);
+    });
+
+    return {
+      json: tree_json,
+      error: null
+    }
   }
 
   function d3_add_custom_menu(node, name, callback, condition) {
@@ -3084,4 +3197,52 @@
   d3.layout.phylotree.is_leafnode = d3_phylotree_is_leafnode;
   d3.layout.phylotree.add_custom_menu = d3_add_custom_menu;
   d3.layout.phylotree.trigger_refresh = d3_phylotree_trigger_refresh;
+
+/**
+ * A parser for NexML. This is a separate function, since NeXML objects
+ * can contain multiple trees. Results should be passed into a phylotree
+ * object, as shown in the examples.
+ *
+ * @param {Object} nexml - A NeXML string.
+ * @returns {Object} trees - An array of trees contained in the NeXML object.
+ */
+  d3.layout.phylotree.nexml_parser = function (xml_string) {
+    var trees;
+    parseString(xml_string, function(error, xml) {
+      trees = xml["nex:nexml"].trees[0].tree.map(function(nexml_tree) {
+        var node_list = nexml_tree.node.map(d=>d.$),
+          node_hash = node_list.reduce(function(a,b){
+            b.edges = [];
+            b.name = b.id;
+            a[b.id] = b;
+            return a;
+          }, {}),
+          roots = node_list.filter(d=>d.root),
+          root_id = roots > 0 ? roots[0].id : node_list[0].id;
+        node_hash[root_id].name = 'root';
+
+        nexml_tree.edge.map(d=>d.$)
+          .forEach(function(edge){
+            node_hash[edge.source].edges.push(edge);
+          });
+        
+        function parse_nexml(node, index) {
+          if(node.edges) {
+            var targets = _.pluck(node.edges, 'target');
+            node.children = _.values(_.pick(node_hash, targets));
+            node.children.forEach(function(child, i){
+              child.attribute = node.edges[i].length || "";
+            });
+            node.children.forEach(parse_nexml);
+            node.annotation = "";
+          }
+        }
+
+        parse_nexml(node_hash[root_id]);
+        return node_hash[root_id];
+      });
+    });
+    return trees;
+  }
+
 }.call(this));
