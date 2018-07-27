@@ -122,6 +122,7 @@ const parseString = require('xml2js').parseString;
                 "maximum-per-level-spacing": 100,
                 "minimum-per-level-spacing": 10,
                 node_circle_size: d3.functor(3),
+                exernal_node_circle_size: d3.functor(3),
                 transitions: null,
                 brush: true,
                 reroot: true,
@@ -1937,6 +1938,12 @@ const parseString = require('xml2js').parseString;
             return phylotree;
         };
 
+        phylotree.external_node_circle_size = function(attr, attr2) {
+            if (!arguments.length) return options["external_node_circle_size"];
+            options["external_node_circle_size"] = d3.functor(attr === undefined ? 3 : attr);
+            return phylotree;
+        };
+
         phylotree.needs_redraw = function() {
             return needs_redraw;
         };
@@ -2657,8 +2664,10 @@ const parseString = require('xml2js').parseString;
                     tracers.remove();
                 }
 
+                var shift = 0;
+
                 if (options["draw-size-bubbles"]) {
-                    var shift = phylotree.node_bubble_size(node);
+                    shift = phylotree.node_bubble_size(node);
                     var circles = container.selectAll("circle").data([shift]);
                     circles.enter().append("circle");
                     if (transitions) {
@@ -2668,21 +2677,40 @@ const parseString = require('xml2js').parseString;
                         return d;
                     });
 
-                    if (shown_font_size >= 5) {
-                        labels.attr("dx", function(d) {
-                            return (
-                                (d.text_align == "end" ? -1 : 1) *
-                                ((phylotree.align_tips() ? 0 : shift) + shown_font_size * 0.33)
-                            );
-                        });
-                    }
                 } else {
+                    var circles = container.selectAll("circle").data([node]),
+                        radius = phylotree.external_node_circle_size()(node);
+
+                    shift = radius;
+                    
+                    if (radius > 0) {
+                        circles.enter().append("circle");
+                        circles
+                            .attr("r", function(d) {
+                                return Math.min(shown_font_size * 0.75, radius);
+                            })
+                            .on("click", function(d) {
+                                phylotree.handle_node_click(d);
+                            });
+                    } else {
+                        circles.remove();
+                    }
                     if (shown_font_size >= 5) {
                         labels.attr("dx", function(d) {
                             return (d.text_align == "end" ? -1 : 1) * shown_font_size * 0.33;
                         });
                     }
                 }
+
+                if (shown_font_size >= 5) {
+                    labels.attr("dx", function(d) {
+                        return (
+                            (d.text_align == "end" ? -1 : 1) *
+                            ((phylotree.align_tips() ? 0 : shift) + shown_font_size * 0.33)
+                        );
+                    });
+                }
+
             } else {
                 var circles = container.selectAll("circle").data([node]),
                     radius = phylotree.node_circle_size()(node);
