@@ -16,14 +16,14 @@
     "bootstrap": "3.x",
     "d3": "3.x",
     "font-awesome": "4.x",
-    "jquery": "1.x",
+    "jquery": "^3.3.1",
     "underscore": "1.x",
     "xml2js": "^0.4.19"
   },
   "devDependencies": {
     "jsdom": "9.12.x",
     "should": "^11.2.1",
-    "webpack": "^4.6.0",
+    "webpack": "^4.16.2",
     "webpack-cli": "^2.0.15"
   },
   "scripts": {
